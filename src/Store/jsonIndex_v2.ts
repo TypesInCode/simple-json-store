@@ -58,16 +58,22 @@ function GetPropertyPaths(obj: any): string[] {
 }
 
 export class JsonIndex<T extends IRecord> {
-    private indexMap = new Map<string, Map<SortableType, Map<string, Sortable>>>();
+    private _idToSortableMap = new Map<string, Sortable>();
+    private _pathToSortableIndex: { [path: string]: number } = {};
+    private _pathToTypeToIdsArray = new Map<string, Map<SortableType, Set<string>>>();
+    private _types: SortableTypeEnum[] = [];
+
+    /* private indexMap = new Map<string, Map<SortableType, Map<string, Sortable>>>();
     private paths: string[] = [];
-    private types: SortableTypeEnum[] = []
+    private types: SortableTypeEnum[] = [] */
 
     public get Size() {
-        var idMap = this.indexMap.get("_id");
+        /* var idMap = this.indexMap.get("_id");
         if(idMap === undefined)
             return 0;
 
-        return idMap.size;
+        return idMap.size; */
+        return this._idToSortableMap.size;
     }
 
     constructor(private buildIndex: {(index: JsonIndex<T>): Promise<void>}, indexed?: RecursiveIndex<T>) {
@@ -92,7 +98,7 @@ export class JsonIndex<T extends IRecord> {
     }
 
     public Delete(id: string) {
-        var curr = this.GetObjectById(id);
+        /* var curr = this.GetObjectById(id);
         if(curr === undefined)
             return false;
         
@@ -103,25 +109,28 @@ export class JsonIndex<T extends IRecord> {
             var idMap = propMap!.get(objectValue);
             if(idMap !== undefined)
                 idMap.delete(object[0] as string);
-        }
+        } */
+        this._idToSortableMap.delete(id);
         return true;
     }
 
     public Clear() {
-        this.indexMap.forEach(function(value) { 
+        this._idToSortableMap.clear();
+        this._pathToTypeToIdsArray.clear();
+        /* this.indexMap.forEach(function(value) { 
             value.clear();
-        });
+        }); */
     }
 
     private ensuringIndex: Promise<void> | null = null;
     public async Query(query: JsonIndexQuery<T>) {
-        var properties = GetPropertyPaths(query.eq);
-        var neqProperties = GetPropertyPaths(query.neq);
-        var gtProperties = GetPropertyPaths(query.gte);
-        var ltProperties = GetPropertyPaths(query.lt);
-        var sortProperties = GetPropertyPaths(query.sort);
+        const properties = GetPropertyPaths(query.eq);
+        const neqProperties = GetPropertyPaths(query.neq);
+        const gtProperties = GetPropertyPaths(query.gte);
+        const ltProperties = GetPropertyPaths(query.lt);
+        const sortProperties = GetPropertyPaths(query.sort);
 
-        var indexProperties = [
+        const indexProperties = [
             ...properties,
             ...neqProperties,
             ...gtProperties,
@@ -131,21 +140,30 @@ export class JsonIndex<T extends IRecord> {
         this.ensuringIndex = this.EnsureIndex(indexProperties);
         await this.ensuringIndex;
 
-        var sortable: any[][] | undefined = undefined;
+        let sortable: Sortable[];
         if(properties.length > 0) {
-            var idMaps = properties.map(prop => this.GetIndexedValueMap(prop, GetValue(query.eq, prop)));
-            if(idMaps.length === 0)
+            const idSets = properties.map(prop => this.GetIndexedValueSet(prop, GetValue(query.eq, prop)));
+            if(idSets.length === 0)
                 return [];
+
+            const idSet = idSets.length === 1 ? idSets[0] : idSets.reduce((pre, curr) => {
+                curr.forEach(id => pre.add(id));
+                return pre;
+            }, new Set<string>());
+            const idSetArray = [...idSet];
+
+            sortable = idSetArray.map(id => this._idToSortableMap.get(id)) as Sortable[];
             
-            sortable = [...idMaps[0].values()];
-            if(idMaps.length > 1)
+            /* if(idSets.length === 1)
+                sortable = [...idSets[0]];
+            if(idSets.length > 1)
                 sortable = sortable.filter(function(sortable) {
-                    for(var x=1; x<idMaps.length && idMaps[x].has(sortable[0]); x++) {}
-                    return x === idMaps.length;
-                });
+                    for(var x=1; x<idSets.length && idSets[x].has(sortable[0]); x++) {}
+                    return x === idSets.length;
+                }); */
         }
         else
-            sortable = sortable || [...this.AllValues()];
+            sortable = [...this.AllValues()];
 
         if(gtProperties.length > 0) {
             sortable = this.GtLtFilter(sortable, gtProperties, query.gte as RecursivePartial<T>, 'gt');
@@ -158,7 +176,8 @@ export class JsonIndex<T extends IRecord> {
         sortable = this.Sort(sortable, sortProperties, query.sort!);
 
         if(neqProperties.length > 0) {
-            const neqIndexes = neqProperties.map(prop => this.paths.indexOf(prop));
+            // const neqIndexes = neqProperties.map(prop => this.paths.indexOf(prop));
+            const neqIndexes = neqProperties.map(prop => this._pathToSortableIndex[prop]);
             const neqValues = neqProperties.map(prop => GetValue(query.neq, prop));
 
             sortable = sortable.filter(function(sort) {
@@ -183,7 +202,8 @@ export class JsonIndex<T extends IRecord> {
     }
 
     private GtLtFilter(sortable: Sortable[], properties: string[], filter: RecursivePartial<T>, dir: 'gt' | 'lt') {
-        const gtIndexes = properties.map(prop => this.paths.indexOf(prop));
+        // const gtIndexes = properties.map(prop => this.paths.indexOf(prop));
+        const gtIndexes = properties.map(prop => this._pathToSortableIndex[prop]);
         const gtValues = properties.map(prop => GetValue(filter, prop));
         const gtSort = this.ConvertToAscending(filter);
         
@@ -232,19 +252,35 @@ export class JsonIndex<T extends IRecord> {
             return sortable;
 
         var sortPropertyIndexes = sortProperties.map(prop => {
-            return this.paths.indexOf(prop);
+            // return this.paths.indexOf(prop);
+            return this._pathToSortableIndex[prop];
         });
 
         var sortDirs = sortProperties.map(function(path) {
             return GetValue(sort, path) === "ASC" ? 1 : -1;
         });
 
-        QuickSort(sortable, this.types, sortPropertyIndexes, sortDirs);
+        QuickSort(sortable, this._types, sortPropertyIndexes, sortDirs);
         return sortable;
     }
 
-    private UpdateTypesArray(indexed: any[]) {
-        if(this.paths.length === this.types.length)
+    private UpdateTypesArray(indexed: Sortable) {
+        if(this._types.length === indexed.length)
+            return;
+
+        this._types = indexed.map(function(val) {
+            switch(typeof val) {
+                case "string":
+                    return SortableTypeEnum.string;
+                case "number":
+                    return SortableTypeEnum.number;
+                case "boolean":
+                    return SortableTypeEnum.boolean;
+                default:
+                    throw new Error("Invalid type found in index");
+            }
+        });
+        /* if(this.paths.length === this.types.length)
             return;
         
         this.types = indexed.map(function(val) {
@@ -258,11 +294,12 @@ export class JsonIndex<T extends IRecord> {
                 default:
                     throw new Error("Invalid type found in index");
             }
-        });
+        }); */
     }
 
     private GetObjectById(id: string) {
-        var valueMap = this.indexMap.get("_id");
+        return this._idToSortableMap.get(id);
+        /* var valueMap = this.indexMap.get("_id");
         if(valueMap === undefined)
             return undefined;
 
@@ -270,11 +307,23 @@ export class JsonIndex<T extends IRecord> {
         if(idMap === undefined)
             return undefined;
 
-        return idMap.get(id);
+        return idMap.get(id); */
     }
     
     private AddToIndex(object: T) {
-        this.indexMap.forEach((index, key) => {
+        this._pathToTypeToIdsArray.forEach((valueToIdMap, propertyPath) => {
+            const propertyValue = GetValue(object, propertyPath);
+            let idArray = valueToIdMap.get(propertyValue);
+            if(idArray === undefined) {
+                idArray = new Set();
+                valueToIdMap.set(propertyValue, idArray);
+            }
+
+            idArray.add(object._id);
+        });
+
+        this._idToSortableMap.set(object._id, this.GetSortable(object));
+        /* this.indexMap.forEach((index, key) => {
             var objectValue = GetValue(object, key);
             var idMap = index.get(objectValue);
             if(idMap === undefined) {
@@ -283,25 +332,32 @@ export class JsonIndex<T extends IRecord> {
             }
 
             idMap.set(object._id, this.GetSortable(object));
-        });
+        }); */
     }
 
-    private GetIndexedValueMap(property: string, value: any | undefined) {
+    /* private GetIndexedValueMap(property: string, value: any | undefined) {
         if(value === undefined)
             return new Map<string, any[][]>();
         
         var valueMap = this.indexMap.get(property);
         return valueMap?.get(value) || new Map<string, any[][]>();
+    } */
+
+    private GetIndexedValueSet(propertyPath: string, value: SortableType) {
+        return this._pathToTypeToIdsArray.get(propertyPath)?.get(value) || new Set();
     }
 
     private* AllValues() {
-        var valueMap = this.indexMap.get("_id");
+        for(const sortable of this._idToSortableMap.values())
+            yield sortable;
+
+        /* var valueMap = this.indexMap.get("_id");
         if(valueMap === undefined)
             return;
         
         for(var map of valueMap.values())
             for(var value of map.values())
-                yield value;
+                yield value; */
     }
 
     private GetSortable(object: T) {
@@ -325,18 +381,23 @@ export class JsonIndex<T extends IRecord> {
         if(this.ensuringIndex !== null)
             await this.ensuringIndex;
 
-        var missingProperties = [];
+        var missingProperties: string[] = [];
         for(var x=0; x<properties.length; x++)
-            if(!this.indexMap.has(properties[x]))
+            if(!Object.hasOwn(this._pathToSortableIndex, properties[x]))
+            // if(!this.indexMap.has(properties[x]))
                 missingProperties.push(properties[x]);
 
-        for(var x=0; x<missingProperties.length; x++) {
-            this.indexMap.set(missingProperties[x], new Map());
-            this.paths.push(missingProperties[x]);
-        }
+        if(missingProperties.length > 0) {
+            const existingCount = Object.keys(this._pathToSortableIndex).length;
+            for(var x=0; x<missingProperties.length; x++) {
+                this._pathToSortableIndex[missingProperties[x]] = x + existingCount;
+                this._pathToTypeToIdsArray.set(missingProperties[x], new Map());
+                /* this.indexMap.set(missingProperties[x], new Map());
+                this.paths.push(missingProperties[x]); */
+            }
 
-        if(missingProperties.length > 0)
             await this.RebuildIndex();
+        }
     }
 
     private async RebuildIndex() {

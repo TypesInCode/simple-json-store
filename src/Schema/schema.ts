@@ -36,7 +36,7 @@ function AssertSchema<T>(val: Partial<T>, schema: Schema<T>) {
     val = val || {};
 
     var ret = {} as T;
-    var properties = (schemaPropertiesMap.get(schema) || Reflect.ownKeys(schema)) as Array<keyof T>;
+    var properties = (schemaPropertiesMap.get(schema) || Object.keys(schema)) as Array<keyof T>;
     for(var x=0; x<properties.length; x++)
         ret[properties[x]] = schema[properties[x]]((val as any)[properties[x]]);
 
@@ -124,7 +124,7 @@ export namespace Schema {
 
     export function ToFunction<T>(schema: Schema<T>): SchemaFunc<T> {
         if(!schemaPropertiesMap.has(schema))
-            schemaPropertiesMap.set(schema, Reflect.ownKeys(schema) as string[]);
+            schemaPropertiesMap.set(schema, Object.keys(schema) as string[]);
         
         return (val: Partial<T>) => AssertSchema(val, schema);
     }
